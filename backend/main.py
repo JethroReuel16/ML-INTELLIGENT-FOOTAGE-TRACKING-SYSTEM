@@ -1,8 +1,10 @@
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.search import router as search_router
 from app.api.routes.results import router as results_router
+from app.api.routes.sources import router as sources_router
 
 
 app = FastAPI(
@@ -14,11 +16,6 @@ app = FastAPI(
     version="1.0.0",
 )
 
-
-# ---------------------------------------------------------
-# CORS
-# ---------------------------------------------------------
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,10 +24,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# ---------------------------------------------------------
-# Root
-# ---------------------------------------------------------
 
 @app.get("/")
 def root():
@@ -42,10 +35,6 @@ def root():
     }
 
 
-# ---------------------------------------------------------
-# Health
-# ---------------------------------------------------------
-
 @app.get("/health")
 def health_check():
     return {
@@ -54,9 +43,6 @@ def health_check():
     }
 
 
-# ---------------------------------------------------------
-# API Routes
-# ---------------------------------------------------------
-
 app.include_router(search_router)
 app.include_router(results_router)
+app.include_router(sources_router)
