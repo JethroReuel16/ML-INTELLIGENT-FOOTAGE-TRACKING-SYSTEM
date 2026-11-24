@@ -1,26 +1,160 @@
 @import "tailwindcss";
 
+/* ==========================================================================
+   ML Footage Tracking System — design tokens
+   A calm, high-contrast dark console theme. Components use these tokens via
+   Tailwind utilities (bg-surface, text-fg, border-line, text-accent, …).
+   ========================================================================== */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: dark;
+
+  --bg: #0a0e13;
+  --surface: #10151c;
+  --surface-2: #151b23;
+  --surface-3: #1c2430;
+
+  --line: #222b37;
+  --line-strong: #2f3a49;
+
+  --fg: #e8edf3;
+  --fg-2: #b9c4d0;
+  --muted: #8d9aab;
+  --faint: #6d7a8b;
+
+  --accent: #45bccd;
+  --accent-strong: #147886;
+  --accent-hover: #1a8c9c;
+
+  --ok: #3fd29a;
+  --warn: #f3bd4e;
+  --danger: #f27a84;
+  --info: #6ea8fe;
+
+  --sidebar-w: 248px;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-fg-2: var(--fg-2);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-hover: var(--accent-hover);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+
+  --font-sans: var(--font-geist-sans), "Segoe UI", system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop {
+    border-color: var(--line);
+  }
+
+  html,
+  body {
+    background: var(--bg);
+  }
+
+  body {
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--accent) 40%, transparent);
+    color: #fff;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  input[type="checkbox"],
+  input[type="radio"],
+  input[type="range"] {
+    accent-color: var(--accent);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Subtle ambient glow so the canvas is not flat black. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(900px 480px at 85% -10%, rgba(69, 188, 205, 0.07), transparent 65%),
+    radial-gradient(700px 420px at -10% 110%, rgba(63, 210, 154, 0.035), transparent 60%);
+}
+
+@layer components {
+  /* Form controls share one look. */
+  .vt-input {
+    width: 100%;
+    border-radius: 8px;
+    border: 1px solid var(--line-strong);
+    background: var(--surface-2);
+    color: var(--fg);
+    padding: 0.625rem 0.875rem;
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .vt-input::placeholder {
+    color: var(--faint);
+  }
+  .vt-input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+  .vt-input:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+  .vt-input[aria-invalid="true"] {
+    border-color: var(--danger);
+  }
+
+  .vt-eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

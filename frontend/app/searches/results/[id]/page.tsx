@@ -1,493 +1,318 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Clock, Eye, Plus, SearchX, Target, Trash2, TriangleAlert } from "lucide-react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { useCallback, useMemo, useState } from "react";
 
 import {
+  EvidenceImage,
+  MatchStatusBadge,
+  SearchModeBadge,
+  primaryScore,
+} from "@/components/search";
+import {
+  Alert,
+  Badge,
+  Button,
+  ButtonLink,
+  Card,
+  CardHeader,
+  EmptyState,
+  ErrorState,
+  KeyValue,
+  LoadingState,
+  Modal,
+  Page,
+  PageHeader,
+  cn,
+} from "@/components/ui";
+import {
+  formatClock,
+  formatDateTime,
+  formatDuration,
+  formatNumber,
+  formatPercent,
+  formatResolution,
+} from "@/lib/format";
+import {
+  deleteSearch,
   getEvidenceUrl,
   getSearchResult,
   VisionTraceMatch,
-  VisionTraceResult,
-} from "../../../../services/api";
+} from "@/services/api";
 
-export default function SearchResultDetailsPage() {
-  const params = useParams();
+/** Detector input sizes above this mean the "small objects" option was used. */
+const STANDARD_DETECTION_SIZE = 640;
+import { useResource } from "@/lib/useResource";
+
+export default function SearchResultPage() {
+  const params = useParams<{ id: string }>();
+  const searchId = params?.id ?? "";
+
+  const fetchResult = useCallback(() => getSearchResult(searchId), [searchId]);
+  const { data: result, loading, error, reload } = useResource(fetchResult, !!searchId);
   const router = useRouter();
+  const [classFilter, setClassFilter] = useState("all");
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
-  const searchId = params?.id as string;
+  async function handleDelete() {
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await deleteSearch(searchId);
+      router.replace("/history");
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : "Unable to delete this search.");
+      setDeleting(false);
+    }
+  }
 
-  const [result, setResult] =
-    useState<VisionTraceResult | null>(null);
-
-  const [loading, setLoading] =
-    useState(true);
-
-  const [error, setError] =
-    useState("");
-
-  useEffect(() => {
-    if (!searchId) return;
-
-    const loadResult = async () => {
-      try {
-        setLoading(true);
-        setError("");
-
-        const data =
-          await getSearchResult(searchId);
-
-        console.log(
-          "VISIONTRACE RESULT:",
-          data
-        );
-
-        setResult(data);
-      } catch (err) {
-        console.error(err);
-
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Unable to load search result."
-        );
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadResult();
-  }, [searchId]);
+  const matches = useMemo(() => result?.matches ?? [], [result]);
+  const classes = useMemo(
+    () => Array.from(new Set(matches.map((m) => m.class_name).filter(Boolean))).sort(),
+    [matches]
+  );
+  const visible =
+    classFilter === "all" ? matches : matches.filter((m) => m.class_name === classFilter);
 
   if (loading) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-gray-50 px-6">
-        <div className="text-center">
-          <div className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-200 border-t-black" />
-
-          <p className="text-gray-600">
-            Loading VisionTrace results...
-          </p>
-        </div>
-      </main>
+      <Page>
+        <LoadingState label="Loading search results…" />
+      </Page>
     );
   }
 
-  if (error) {
+  if (error || !result) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-gray-50 px-6">
-        <div className="w-full max-w-lg rounded-2xl border bg-white p-8 text-center shadow-sm">
-          <h1 className="text-xl font-bold text-gray-900">
-            Unable to Load Results
-          </h1>
-
-          <p className="mt-3 text-sm text-red-600">
-            {error}
-          </p>
-
-          <button
-            onClick={() =>
-              router.push("/searches/new")
-            }
-            className="mt-6 rounded-xl bg-black px-6 py-3 font-semibold text-white transition hover:bg-gray-800"
-          >
-            Start New Search
-          </button>
-        </div>
-      </main>
+      <Page>
+        <ErrorState
+          title="Unable to load results"
+          message={error || "This search could not be found."}
+          onRetry={reload}
+          action={
+            <ButtonLink href="/history" variant="ghost">
+              Back to history
+            </ButtonLink>
+          }
+        />
+      </Page>
     );
   }
 
-  if (!result) {
-    return null;
-  }
-
-  const matches = result.matches ?? [];
-
-  const topMatch =
-    matches.length > 0
-      ? matches[0]
-      : null;
+  const { search, video } = result;
+  const prompt = search.text_prompt ?? result.reference?.text_prompt;
+  const textOnly = search.ranking_basis === "detection_confidence";
+  const smallObjects = (search.detection_size ?? 0) > STANDARD_DETECTION_SIZE;
+  const evidenceHref = (m: VisionTraceMatch) =>
+    `/searches/evidence/${encodeURIComponent(result.search_id)}?rank=${m.rank}`;
 
   return (
-    <main className="min-h-screen bg-gray-50 px-6 py-10">
-      <div className="mx-auto max-w-7xl">
+    <Page>
+      <PageHeader
+        back={{ href: "/history", label: "Case history" }}
+        title={prompt ? `“${prompt}”` : "Search results"}
+        description={`Run ${formatDateTime(result.created_at)}${result.source?.name ? ` on ${result.source.name}` : ""}`}
+        meta={
+          <>
+            <SearchModeBadge mode={search.search_mode} />
+            {result.source?.source_type && (
+              <Badge>{String(result.source.source_type).toUpperCase()}</Badge>
+            )}
+            {search.detector && (
+              <Badge tone={search.detector.fallback ? "warn" : "neutral"}>
+                Detector: {search.detector.active}
+                {search.detector.fallback ? " (fallback)" : ""}
+              </Badge>
+            )}
+            {smallObjects && <Badge tone="info">Small objects</Badge>}
+          </>
+        }
+        actions={
+          <>
+            <Button variant="ghost" icon={Trash2} onClick={() => setConfirmDelete(true)} aria-label="Delete search">
+              <span className="hidden sm:inline">Delete</span>
+            </Button>
+            {matches.length > 0 && (
+              <ButtonLink href={evidenceHref(matches[0])} variant="secondary" icon={Eye}>
+                Review evidence
+              </ButtonLink>
+            )}
+            <ButtonLink href="/searches/new" icon={Plus}>
+              New search
+            </ButtonLink>
+          </>
+        }
+      />
 
-        {/* HEADER */}
-        <div className="mb-8 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div>
-            <button
-              onClick={() =>
-                router.push("/searches/new")
-              }
-              className="mb-3 text-sm text-gray-500 transition hover:text-gray-900"
-            >
-              ← New Search
-            </button>
-
-            <h1 className="text-3xl font-bold text-gray-900">
-              Search Results
-            </h1>
-
-            <p className="mt-2 text-sm text-gray-500">
-              Search ID: {result.search_id}
-            </p>
-          </div>
-
-          <button
-            onClick={() =>
-              router.push("/searches/new")
-            }
-            className="rounded-xl bg-black px-6 py-3 font-semibold text-white transition hover:bg-gray-800"
-          >
-            New Search
-          </button>
+      {search.detector?.fallback && search.detector.fallback_reason && (
+        <div className="mb-6 flex gap-3 rounded-lg border border-warn/35 bg-warn/10 px-4 py-3 text-sm text-fg-2">
+          <TriangleAlert size={18} className="shrink-0 text-warn" aria-hidden />
+          The preferred detector was unavailable, so a fallback was used: {search.detector.fallback_reason}
         </div>
+      )}
 
-        {/* SUMMARY */}
-        <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <SummaryCard
-            title="Candidates"
-            value={
-              result.search.candidates
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
+        {/* Candidates */}
+        <Card className="min-w-0">
+          <CardHeader
+            title={`${matches.length} candidate${matches.length === 1 ? "" : "s"}`}
+            description={
+              textOnly
+                ? "Ranked by detection confidence (no reference image was provided)."
+                : "Ranked by visual similarity to your reference image."
             }
           />
 
-          <SummaryCard
-            title="Unique Tracks"
-            value={
-              result.search.unique_tracks
-            }
-          />
-
-          <SummaryCard
-            title="Frames Analyzed"
-            value={
-              result.search.frames_analyzed
-            }
-          />
-
-          <SummaryCard
-            title="Status"
-            value={result.status}
-          />
-        </div>
-
-        {/* TOP CANDIDATE */}
-        {topMatch && (
-          <section className="mb-8 rounded-2xl border bg-white p-6 shadow-sm">
-            <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-xl font-bold text-gray-900">
-                  Top Candidate
-                </h2>
-
-                <p className="mt-1 text-sm text-gray-500">
-                  Highest-ranked visual candidate
-                  found in the footage.
-                </p>
-              </div>
-
-              <button
-                onClick={() =>
-                  router.push(
-                    `/searches/evidence/${searchId}?rank=${topMatch.rank}`
-                  )
-                }
-                className="rounded-xl bg-black px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
-              >
-                Open Evidence
-              </button>
-            </div>
-
-            <MatchCard
-              match={topMatch}
-              searchId={searchId}
-              featured
-            />
-          </section>
-        )}
-
-        {/* ALL CANDIDATES */}
-        <section className="rounded-2xl border bg-white p-6 shadow-sm">
-          <div className="mb-6">
-            <h2 className="text-xl font-bold text-gray-900">
-              All Candidates
-            </h2>
-
-            <p className="mt-1 text-sm text-gray-500">
-              Candidates ranked by the VisionTrace
-              visual similarity pipeline.
-            </p>
-          </div>
-
-          {matches.length === 0 ? (
-            <div className="rounded-xl bg-gray-50 p-10 text-center">
-              <p className="font-medium text-gray-900">
-                No matching candidates found.
-              </p>
-
-              <p className="mt-2 text-sm text-gray-500">
-                Try another reference image or
-                video.
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {matches.map((match) => (
-                <MatchCard
-                  key={`${match.rank}-${match.track_id}`}
-                  match={match}
-                  searchId={searchId}
-                />
+          {classes.length > 1 && (
+            <div className="flex flex-wrap gap-1.5 border-b border-line px-5 py-3">
+              {["all", ...classes].map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setClassFilter(c)}
+                  aria-pressed={classFilter === c}
+                  className={cn(
+                    "rounded-full border px-3 py-1 text-xs capitalize transition-colors",
+                    classFilter === c
+                      ? "border-accent/50 bg-accent/10 text-accent"
+                      : "border-line-strong text-muted hover:text-fg"
+                  )}
+                >
+                  {c === "all" ? `All (${matches.length})` : c}
+                </button>
               ))}
             </div>
           )}
-        </section>
-      </div>
-    </main>
-  );
-}
 
-function SummaryCard({
-  title,
-  value,
-}: {
-  title: string;
-  value: string | number;
-}) {
-  return (
-    <div className="rounded-2xl border bg-white p-5 shadow-sm">
-      <p className="text-sm text-gray-500">
-        {title}
-      </p>
-
-      <p className="mt-2 text-2xl font-bold text-gray-900">
-        {value}
-      </p>
-    </div>
-  );
-}
-
-function MatchCard({
-  match,
-  searchId,
-  featured = false,
-}: {
-  match: VisionTraceMatch;
-  searchId: string;
-  featured?: boolean;
-}) {
-  const evidenceUrl =
-    getEvidenceUrl(
-      searchId,
-      match.evidence_image
-    );
-
-  const evidencePage =
-    `/searches/evidence/${searchId}?rank=${match.rank}`;
-
-  return (
-    <div
-      className={`overflow-hidden rounded-xl border ${
-        featured
-          ? "border-gray-300"
-          : "border-gray-200"
-      }`}
-    >
-      <div className="grid md:grid-cols-[260px_1fr]">
-
-        {/* EVIDENCE IMAGE */}
-        <button
-          type="button"
-          onClick={() =>
-            window.location.href =
-              evidencePage
-          }
-          className="group flex min-h-[200px] items-center justify-center bg-gray-100 text-left"
-        >
-          {evidenceUrl ? (
-            <img
-              src={evidenceUrl}
-              alt={`Evidence for track ${match.track_id}`}
-              className="h-full min-h-[200px] w-full object-cover transition duration-200 group-hover:scale-[1.02]"
+          {visible.length === 0 ? (
+            <EmptyState
+              icon={SearchX}
+              title="No candidates found"
+              description={
+                smallObjects
+                  ? "Nothing in this footage matched. Try a clearer reference image, a different description, or a lower minimum confidence."
+                  : "Nothing in this footage matched. If the object is small in the frame (a shoe, phone or watch), run the search again with “Detect small objects” under Advanced settings, or lower the minimum confidence."
+              }
+              action={
+                <ButtonLink href="/searches/new" icon={Plus}>
+                  Try another search
+                </ButtonLink>
+              }
             />
           ) : (
-            <div className="text-sm text-gray-400">
-              No evidence image
-            </div>
+            <ul className="grid gap-4 p-4 sm:grid-cols-2 xl:grid-cols-3">
+              {visible.map((m) => (
+                <li key={`${m.rank}-${m.track_id}`}>
+                  <CandidateCard
+                    match={m}
+                    href={evidenceHref(m)}
+                    image={getEvidenceUrl(result.search_id, m.evidence_image)}
+                  />
+                </li>
+              ))}
+            </ul>
           )}
-        </button>
+        </Card>
 
-        {/* DETAILS */}
-        <div className="p-5">
+        {/* Summary */}
+        <aside className="space-y-6">
+          <Card>
+            <CardHeader title="Search summary" />
+            <dl className="grid grid-cols-2 gap-2 p-4">
+              <KeyValue label="Frames analysed" value={formatNumber(search.frames_analyzed)} />
+              <KeyValue label="Unique tracks" value={formatNumber(search.unique_tracks)} />
+              <KeyValue label="Observations" value={formatNumber(search.candidate_observations)} />
+              <KeyValue label="Frame interval" value={`Every ${search.frame_interval}`} />
+              <KeyValue label="Min. confidence" value={formatPercent(search.minimum_detection_confidence, 0)} />
+              <KeyValue label="Status" value={result.status} />
+            </dl>
+          </Card>
 
-          <div className="mb-5 flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-gray-900 px-3 py-1 text-xs font-semibold text-white">
-              #{match.rank}
-            </span>
-
-            <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">
-              Track {match.track_id}
-            </span>
-
-            <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-700">
-              {match.class_name}
-            </span>
-
-            <StatusBadge
-              status={match.match_status}
-            />
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Metric
-              label="Similarity Score"
-              value={formatScore(
-                match.similarity_score
-              )}
-            />
-
-            <Metric
-              label="Ranking Score"
-              value={formatScore(
-                match.ranking_score
-              )}
-            />
-
-            <Metric
-              label="Detection Confidence"
-              value={formatScore(
-                match.detection_confidence
-              )}
-            />
-
-            <Metric
-              label="Frames Observed"
-              value={
-                match.frames_observed
-              }
-            />
-          </div>
-
-          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Metric
-              label="Top 3 Average"
-              value={formatScore(
-                match.top3_average
-              )}
-            />
-
-            <Metric
-              label="Average Similarity"
-              value={formatScore(
-                match.average_similarity
-              )}
-            />
-
-            <Metric
-              label="Timestamp"
-              value={formatTime(
-                match.timestamp
-              )}
-            />
-
-            <Metric
-              label="Frame Number"
-              value={
-                match.frame_number
-              }
-            />
-          </div>
-
-          <div className="mt-5 rounded-xl bg-gray-50 p-4">
-            <p className="text-xs font-medium text-gray-500">
-              Detected Bounding Box
+          <Card>
+            <CardHeader title="Footage" />
+            <dl className="grid grid-cols-2 gap-2 p-4">
+              <KeyValue label="Duration" value={formatDuration(video.duration)} />
+              <KeyValue label="Resolution" value={formatResolution(video.width, video.height)} />
+              <KeyValue label="Frame rate" value={video.fps ? `${video.fps.toFixed(1)} fps` : "—"} />
+              <KeyValue label="Total frames" value={formatNumber(video.frame_count)} />
+            </dl>
+            <p className="border-t border-line px-4 py-3 font-mono text-[11px] text-faint" title={result.search_id}>
+              ID {result.search_id}
             </p>
+          </Card>
+        </aside>
+      </div>
 
-            <p className="mt-1 font-mono text-sm text-gray-900">
-              [{match.bbox.join(", ")}]
-            </p>
-          </div>
+      <Modal
+        open={confirmDelete}
+        onClose={() => !deleting && setConfirmDelete(false)}
+        title="Delete this search?"
+        size="sm"
+        description="The results, all evidence images and the stored footage for this search are permanently removed. This cannot be undone."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirmDelete(false)} disabled={deleting}>
+              Cancel
+            </Button>
+            <Button variant="danger" icon={Trash2} loading={deleting} onClick={() => void handleDelete()}>
+              Delete search
+            </Button>
+          </>
+        }
+      >
+        {deleteError && <Alert tone="error">{deleteError}</Alert>}
+      </Modal>
+    </Page>
+  );
+}
 
-          {/* VIEW EVIDENCE */}
-          <div className="mt-5 flex justify-end">
-            <button
-              type="button"
-              onClick={() =>
-                window.location.href =
-                  evidencePage
-              }
-              className="rounded-xl bg-black px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-gray-800"
-            >
-              View Evidence →
-            </button>
-          </div>
+function CandidateCard({
+  match,
+  href,
+  image,
+}: {
+  match: VisionTraceMatch;
+  href: string;
+  image: string;
+}) {
+  const score = primaryScore(match);
+
+  return (
+    <Link
+      href={href}
+      className="group block overflow-hidden rounded-lg border border-line-strong bg-surface-2 transition-colors hover:border-accent/50"
+    >
+      <div className="relative aspect-video">
+        <EvidenceImage
+          src={image}
+          alt={`${match.class_name} candidate, track ${match.track_id}`}
+          className="h-full w-full transition-transform duration-300 group-hover:scale-[1.03]"
+        />
+        <span className="absolute left-2 top-2 rounded-md bg-black/75 px-2 py-0.5 font-mono text-xs font-semibold text-white">
+          #{match.rank}
+        </span>
+        <span className="absolute bottom-2 right-2 inline-flex items-center gap-1 rounded-md bg-black/75 px-2 py-0.5 font-mono text-xs text-white">
+          <Clock size={11} aria-hidden />
+          {formatClock(match.timestamp)}
+        </span>
+      </div>
+      <div className="p-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="truncate text-sm font-semibold capitalize text-fg">{match.class_name}</p>
+          <MatchStatusBadge status={match.match_status} />
+        </div>
+        <div className="mt-2 flex items-center justify-between text-xs text-muted">
+          <span className="inline-flex items-center gap-1">
+            <Target size={12} aria-hidden />
+            {score.label} <span className="font-semibold tabular-nums text-fg">{formatPercent(score.value)}</span>
+          </span>
+          <span>Track {match.track_id}</span>
         </div>
       </div>
-    </div>
+    </Link>
   );
-}
-
-function StatusBadge({
-  status,
-}: {
-  status: string;
-}) {
-  let classes =
-    "bg-gray-100 text-gray-600";
-
-  if (status === "TOP CANDIDATE") {
-    classes =
-      "bg-green-100 text-green-800";
-  }
-
-  if (status === "CANDIDATE") {
-    classes =
-      "bg-blue-100 text-blue-800";
-  }
-
-  if (status === "LOW SIMILARITY") {
-    classes =
-      "bg-gray-100 text-gray-600";
-  }
-
-  return (
-    <span
-      className={`rounded-full px-3 py-1 text-xs font-semibold ${classes}`}
-    >
-      {status}
-    </span>
-  );
-}
-
-function Metric({
-  label,
-  value,
-}: {
-  label: string;
-  value: string | number;
-}) {
-  return (
-    <div className="rounded-lg bg-gray-50 p-3">
-      <p className="text-xs text-gray-500">
-        {label}
-      </p>
-
-      <p className="mt-1 font-bold text-gray-900">
-        {value}
-      </p>
-    </div>
-  );
-}
-
-function formatScore(
-  value: number
-): string {
-  return value.toFixed(4);
-}
-
-function formatTime(
-  value: number
-): string {
-  return `${value.toFixed(2)}s`;
 }

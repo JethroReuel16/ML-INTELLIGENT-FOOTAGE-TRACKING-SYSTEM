@@ -1,0 +1,30 @@
+# ML Footage Tracking System — backend + ML engine runtime dependencies.
+# Pinned to the versions the test suite was run against (Python 3.14).
+#
+# For a CPU-only server, install PyTorch from the CPU index to avoid the large
+# CUDA build:
+#   pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+
+# --- API ---
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+python-multipart==0.0.32
+python-dotenv==1.2.4
+
+# --- Database ---
+SQLAlchemy==2.1.5
+psycopg[binary]==3.3.6
+alembic==1.20.1
+
+# --- Security ---
+argon2-cffi==25.1.0
+
+# --- ML engine (../ml-engene) ---
+torch==2.14.0
+torchvision==0.29.0
+ultralytics==8.4.155
+transformers==5.17.0
+supervision==0.30.4          # ByteTrack; sv.ByteTrack is removed in 0.31 - do not upgrade
+opencv-python==5.0.0.93
+numpy==2.5.3
+pillow==12.3.0

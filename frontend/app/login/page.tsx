@@ -1,110 +1,124 @@
 "use client";
 
-import { FormEvent, useState } from "react";
-import { Eye, EyeOff, ScanSearch } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { LogIn } from "lucide-react";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 
-export default function LoginPage() {
+import AuthLayout from "@/components/AuthLayout";
+import { useAuth } from "@/components/AppChrome";
+import PasswordInput from "@/components/PasswordInput";
+import { Alert, Button, Field } from "@/components/ui";
+import { getCurrentUser, loginUser } from "@/services/api";
+
+/** Only allow same-site relative redirects. */
+function safeNext(value: string | null): string {
+  if (value && value.startsWith("/") && !value.startsWith("//")) return value;
+  return "/dashboard";
+}
+
+function LoginForm() {
   const router = useRouter();
+  const params = useSearchParams();
+  const { setUser } = useAuth();
+  const next = safeNext(params.get("next"));
+  const justRegistered = params.get("registered") === "1";
 
-  const [showPassword, setShowPassword] = useState(false);
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(params.get("email") ?? "");
   const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const handleLogin = (e: FormEvent) => {
-    e.preventDefault();
+  // Already signed in? Skip the form.
+  useEffect(() => {
+    let alive = true;
+    getCurrentUser()
+      .then((u) => {
+        if (!alive) return;
+        setUser(u);
+        router.replace(next);
+      })
+      .catch(() => {
+        /* not signed in — show the form */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [router, next, setUser]);
 
-    // Temporary frontend login.
-    // We will connect this to FastAPI/JWT later.
-    router.push("/dashboard");
-  };
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setLoading(true);
+
+    try {
+      const response = await loginUser(email.trim(), password);
+      setUser(response.user);
+      router.replace(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to sign in. Please try again.");
+      setLoading(false);
+    }
+  }
 
   return (
-    <main className="min-h-screen bg-slate-950 flex items-center justify-center px-6">
-      <div className="w-full max-w-md">
-        <div className="flex flex-col items-center mb-8">
-          <div className="w-14 h-14 rounded-2xl bg-indigo-600 flex items-center justify-center mb-4">
-            <ScanSearch size={30} color="white" />
-          </div>
+    <form onSubmit={handleSubmit} className="space-y-5" noValidate>
+      {justRegistered && !error && (
+        <Alert tone="success">Account created. Sign in to continue.</Alert>
+      )}
+      {error && <Alert tone="error">{error}</Alert>}
 
-          <h1 className="text-3xl font-bold text-white">
-            VisionTrace AI
-          </h1>
+      <Field label="Email address" htmlFor="email">
+        <input
+          id="email"
+          type="email"
+          autoComplete="email"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@organisation.org"
+          className="vt-input"
+        />
+      </Field>
 
-          <p className="text-slate-400 mt-2 text-center">
-            Intelligent video investigation
-          </p>
-        </div>
+      <Field label="Password" htmlFor="password">
+        <PasswordInput
+          id="password"
+          autoComplete="current-password"
+          required
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="Your password"
+        />
+      </Field>
 
-        <div className="bg-white rounded-2xl shadow-2xl p-8">
-          <div className="mb-6">
-            <h2 className="text-2xl font-semibold text-slate-900">
-              Welcome back
-            </h2>
+      <Button
+        type="submit"
+        size="lg"
+        icon={LogIn}
+        loading={loading}
+        disabled={!email.trim() || !password}
+        className="w-full"
+      >
+        {loading ? "Signing in…" : "Sign in"}
+      </Button>
 
-            <p className="text-slate-500 mt-1">
-              Sign in to continue to your workspace.
-            </p>
-          </div>
+      <p className="text-center text-sm text-muted">
+        Don&apos;t have an account?{" "}
+        <Link href="/register" className="font-semibold text-accent hover:underline">
+          Create one
+        </Link>
+      </p>
+    </form>
+  );
+}
 
-          <form onSubmit={handleLogin} className="space-y-5">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">
-                Email address
-              </label>
-
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">
-                Password
-              </label>
-
-              <div className="relative">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter your password"
-                  className="w-full rounded-xl border border-slate-300 px-4 py-3 pr-12 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
-                />
-
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500"
-                >
-                  {showPassword ? (
-                    <EyeOff size={20} />
-                  ) : (
-                    <Eye size={20} />
-                  )}
-                </button>
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              className="w-full rounded-xl bg-indigo-600 py-3.5 font-semibold text-white hover:bg-indigo-700 transition"
-            >
-              Sign in
-            </button>
-          </form>
-
-          <p className="text-xs text-slate-400 text-center mt-6">
-            Authorized access only
-          </p>
-        </div>
-      </div>
-    </main>
+export default function LoginPage() {
+  return (
+    <AuthLayout title="Sign in" subtitle="Use your investigator account to continue.">
+      <Suspense fallback={null}>
+        <LoginForm />
+      </Suspense>
+    </AuthLayout>
   );
 }

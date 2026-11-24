@@ -12,7 +12,7 @@ OUTPUT_PATH = "debug_detection.jpg"
 def main():
 
     print("=" * 60)
-    print("VISIONTRACE - DETECTION DEBUG")
+    print("ML FOOTAGE TRACKING SYSTEM - DETECTION DEBUG")
     print("=" * 60)
 
     detector = YOLODetector()

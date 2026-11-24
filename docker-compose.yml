@@ -1,0 +1,61 @@
+# ML Footage Tracking System — full stack (PostgreSQL + API + web console).
+#
+#   cp .env.example .env      # then set a real password and URLs
+#   docker compose up -d --build
+#
+# Web console: http://localhost:3000   API: http://localhost:8000
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mlft}
+      POSTGRES_USER: ${POSTGRES_USER:-mlft}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mlft}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-mlft}
+      CORS_ORIGINS: ${PUBLIC_WEB_URL:-http://localhost:3000}
+      # false only for a plain-HTTP local trial; set true behind HTTPS.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      DETECTOR_DEVICE: ${DETECTOR_DEVICE:-cpu}
+      ALLOWED_SOURCE_ROOTS: /footage
+    volumes:
+      - backend-data:/data
+      # Footage that "local" video sources may read (read-only).
+      - ${FOOTAGE_DIR:-./footage}:/footage:ro
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8000}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+volumes:
+  db-data:
+  backend-data:

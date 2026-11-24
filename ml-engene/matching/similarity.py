@@ -3,56 +3,23 @@ import torch.nn.functional as F
 
 
 class SimilarityEngine:
+    """Cosine similarity between DINOv2 embeddings."""
 
-    def __init__(self):
-        print("Similarity engine initialized.")
-
-    def cosine_similarity(
-        self,
-        embedding_a,
-        embedding_b
-    ):
-
-        # Make sure both embeddings are tensors
+    def cosine_similarity(self, embedding_a, embedding_b):
         if not isinstance(embedding_a, torch.Tensor):
             embedding_a = torch.tensor(embedding_a)
-
         if not isinstance(embedding_b, torch.Tensor):
             embedding_b = torch.tensor(embedding_b)
 
-        # Add batch dimension
-        embedding_a = embedding_a.unsqueeze(0)
-        embedding_b = embedding_b.unsqueeze(0)
+        return float(F.cosine_similarity(embedding_a.unsqueeze(0), embedding_b.unsqueeze(0)).item())
 
-        # Calculate cosine similarity
-        similarity = F.cosine_similarity(
-            embedding_a,
-            embedding_b
-        )
+    def cosine_similarity_many(self, reference, embeddings):
+        """Similarity of one reference [D] against many embeddings [N, D] -> list of floats."""
+        if not isinstance(reference, torch.Tensor):
+            reference = torch.tensor(reference)
+        if not isinstance(embeddings, torch.Tensor):
+            embeddings = torch.as_tensor(embeddings)
+        if embeddings.numel() == 0:
+            return []
 
-        return float(similarity.item())
-
-
-if __name__ == "__main__":
-
-    print("=" * 50)
-    print("VISIONTRACE AI - SIMILARITY TEST")
-    print("=" * 50)
-
-    engine = SimilarityEngine()
-
-    # Example embeddings
-    embedding_a = torch.tensor(
-        [1.0, 2.0, 3.0]
-    )
-
-    embedding_b = torch.tensor(
-        [1.0, 2.0, 3.0]
-    )
-
-    score = engine.cosine_similarity(
-        embedding_a,
-        embedding_b
-    )
-
-    print("\nSimilarity score:", score)
+        return F.cosine_similarity(embeddings, reference.unsqueeze(0).to(embeddings.dtype), dim=-1).tolist()

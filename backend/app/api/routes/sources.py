@@ -1,36 +1,37 @@
 
-import json
+import logging
 import os
-import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import cv2
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
 
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
+from app.api.routes.auth import get_current_user
+from app.database import get_db
+from app.models import VideoSource
+
+
+logger = logging.getLogger(__name__)
+
+FILE_SOURCE_EXTENSIONS = {
+    ".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".mpeg", ".mpg"
+}
+
+# Connection-test timeouts so an unreachable camera cannot hang a worker.
+TEST_OPEN_TIMEOUT_MS = 10000
+TEST_READ_TIMEOUT_MS = 10000
 
 router = APIRouter(
     prefix="/api/sources",
     tags=["Video Sources"],
 )
-
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-
-BACKEND_DIR = os.path.dirname(
-    os.path.dirname(
-        os.path.dirname(CURRENT_DIR)
-    )
-)
-
-DATA_DIR = os.path.join(BACKEND_DIR, "data")
-SOURCES_FILE = os.path.join(DATA_DIR, "video_sources.json")
-
-os.makedirs(DATA_DIR, exist_ok=True)
-
-_FILE_LOCK = threading.Lock()
 
 
 class VideoSourceCreate(BaseModel):
@@ -57,80 +58,19 @@ ALLOWED_TYPES = {
 }
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def utc_now():
+    return datetime.now(timezone.utc)
 
 
-def load_sources() -> List[Dict[str, Any]]:
-    with _FILE_LOCK:
-        if not os.path.isfile(SOURCES_FILE):
-            return []
-
-        try:
-            with open(
-                SOURCES_FILE,
-                "r",
-                encoding="utf-8",
-            ) as file:
-                data = json.load(file)
-
-            return data if isinstance(data, list) else []
-
-        except (OSError, json.JSONDecodeError):
-            raise HTTPException(
-                status_code=500,
-                detail="Unable to read the video source registry.",
-            )
-
-
-def save_sources(
-    sources: List[Dict[str, Any]],
-) -> None:
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-    temporary_file = SOURCES_FILE + ".tmp"
-
-    with _FILE_LOCK:
-        try:
-            with open(
-                temporary_file,
-                "w",
-                encoding="utf-8",
-            ) as file:
-                json.dump(
-                    sources,
-                    file,
-                    indent=2,
-                    ensure_ascii=False,
-                )
-
-            os.replace(
-                temporary_file,
-                SOURCES_FILE,
-            )
-
-        except OSError as error:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Unable to save video sources: {error}",
-            )
-
-
-def validate_source_type(
-    source_type: str,
-    url: str,
-) -> str:
+def validate_source_type(source_type: str, url: str) -> str:
     normalized_type = source_type.strip().lower()
+    url = url.strip()
 
     if normalized_type not in ALLOWED_TYPES:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "source_type must be rtsp, http, local, or network."
-            ),
+            detail="source_type must be rtsp, http, local, or network.",
         )
-
-    url = url.strip()
 
     if not url:
         raise HTTPException(
@@ -189,14 +129,37 @@ def validate_source_type(
                 ),
             )
 
+    if normalized_type in {"local", "network"}:
+        extension = os.path.splitext(url.rstrip("\\/"))[1].lower()
+
+        if extension not in FILE_SOURCE_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Point the source at a specific video file "
+                    "(MP4, AVI, MOV, MKV, WebM, M4V or MPEG), not a folder."
+                ),
+            )
+
     return normalized_type
 
 
+def open_capture(url: str):
+    """Open a video source with connection timeouts when OpenCV supports them."""
+    try:
+        return cv2.VideoCapture(
+            url,
+            cv2.CAP_FFMPEG,
+            [
+                cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, TEST_OPEN_TIMEOUT_MS,
+                cv2.CAP_PROP_READ_TIMEOUT_MSEC, TEST_READ_TIMEOUT_MS,
+            ],
+        )
+    except (TypeError, cv2.error):
+        return cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+
+
 def mask_source_url(url: str) -> str:
-    """
-    Hide username/password in URL responses while retaining
-    the host, port, path, and query for identification.
-    """
     try:
         parsed = urlsplit(url)
 
@@ -228,90 +191,136 @@ def mask_source_url(url: str) -> str:
         return "[address hidden]"
 
 
-def public_source(
-    source: Dict[str, Any],
-) -> Dict[str, Any]:
-    result = dict(source)
+def public_source(source: VideoSource) -> Dict[str, Any]:
+    raw_url = source.url or ""
 
-    raw_url = result.pop("url", "")
+    try:
+        parsed = urlsplit(raw_url)
 
-    result["display_url"] = mask_source_url(raw_url)
-    result["has_credentials"] = (
-        "://" in raw_url
-        and (
-            urlsplit(raw_url).username is not None
-            or urlsplit(raw_url).password is not None
+        has_credentials = (
+            "://" in raw_url
+            and (
+                parsed.username is not None
+                or parsed.password is not None
+            )
         )
-    )
+    except (ValueError, TypeError):
+        has_credentials = False
 
-    return result
+    return {
+        "id": source.id,
+        "owner_id": str(source.owner_id) if source.owner_id is not None else None,
+        "name": source.name,
+        "source_type": source.source_type,
+        "location": source.location,
+        "description": source.description,
+        "display_url": mask_source_url(raw_url),
+        "has_credentials": has_credentials,
+        "created_at": source.created_at.isoformat() if source.created_at else None,
+        "updated_at": source.updated_at.isoformat() if source.updated_at else None,
+        "last_tested_at": (
+            source.last_tested_at.isoformat()
+            if source.last_tested_at else None
+        ),
+        "last_connection_status": source.last_connection_status,
+    }
 
 
 def find_source(
-    sources: List[Dict[str, Any]],
+    db: Session,
     source_id: str,
-) -> Dict[str, Any]:
-    for source in sources:
-        if source.get("id") == source_id:
-            return source
+    owner_id: int,
+) -> VideoSource:
+    source = (
+        db.query(VideoSource)
+        .filter(
+            VideoSource.id == source_id,
+            VideoSource.owner_id == owner_id,
+        )
+        .first()
+    )
 
+    if source is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Video source not found.",
+        )
+
+    return source
+
+
+def database_error():
     raise HTTPException(
-        status_code=404,
-        detail=f"Video source not found: {source_id}",
+        status_code=500,
+        detail="A database operation failed. Please try again.",
     )
 
 
 @router.get("")
-def list_video_sources() -> List[Dict[str, Any]]:
-    sources = load_sources()
+def list_video_sources(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> List[Dict[str, Any]]:
 
-    sources.sort(
-        key=lambda source: source.get("created_at", ""),
-        reverse=True,
+    sources = (
+        db.query(VideoSource)
+        .filter(VideoSource.owner_id == current_user.id)
+        .order_by(VideoSource.created_at.desc())
+        .all()
     )
 
-    return [
-        public_source(source)
-        for source in sources
-    ]
+    return [public_source(source) for source in sources]
 
 
 @router.post("", status_code=201)
 def create_video_source(
     payload: VideoSourceCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
+
     normalized_type = validate_source_type(
         payload.source_type,
         payload.url,
     )
 
-    sources = load_sources()
+    source = VideoSource(
+        id=f"source_{uuid.uuid4().hex[:12]}",
+        owner_id=current_user.id,
+        name=payload.name.strip(),
+        source_type=normalized_type,
+        url=payload.url.strip(),
+        location=(payload.location or "").strip(),
+        description=(payload.description or "").strip(),
+        last_connection_status="not_tested",
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
 
-    source = {
-        "id": f"source_{uuid.uuid4().hex[:12]}",
-        "name": payload.name.strip(),
-        "source_type": normalized_type,
-        "url": payload.url.strip(),
-        "location": (payload.location or "").strip(),
-        "description": (payload.description or "").strip(),
-        "created_at": utc_now(),
-        "updated_at": utc_now(),
-        "last_tested_at": None,
-        "last_connection_status": "not_tested",
-    }
+    try:
+        db.add(source)
+        db.commit()
+        db.refresh(source)
 
-    sources.append(source)
-    save_sources(sources)
+        return public_source(source)
 
-    return public_source(source)
+    except SQLAlchemyError:
+        db.rollback()
+        database_error()
 
 
 @router.get("/{source_id}")
 def get_video_source(
     source_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    sources = load_sources()
-    source = find_source(sources, source_id)
+
+    source = find_source(
+        db,
+        source_id,
+        current_user.id,
+    )
 
     return public_source(source)
 
@@ -320,9 +329,15 @@ def get_video_source(
 def update_video_source(
     source_id: str,
     payload: VideoSourceUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    sources = load_sources()
-    source = find_source(sources, source_id)
+
+    source = find_source(
+        db,
+        source_id,
+        current_user.id,
+    )
 
     changes = payload.model_dump(exclude_unset=True)
 
@@ -342,7 +357,7 @@ def update_video_source(
 
         new_type = changes.get(
             "source_type",
-            source["source_type"],
+            source.source_type,
         )
 
         normalized_type = validate_source_type(
@@ -350,8 +365,8 @@ def update_video_source(
             new_url,
         )
 
-        source["url"] = new_url
-        source["source_type"] = normalized_type
+        source.url = new_url
+        source.source_type = normalized_type
 
         changes.pop("url", None)
         changes.pop("source_type", None)
@@ -362,71 +377,83 @@ def update_video_source(
     ):
         normalized_type = changes["source_type"].strip().lower()
 
-        if normalized_type != source["source_type"]:
+        if normalized_type != source.source_type:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "Provide a new URL when changing the source type."
-                ),
+                detail="Provide a new URL when changing the source type.",
             )
 
-        changes["source_type"] = normalized_type
+        source.source_type = normalized_type
+
+        changes.pop("source_type", None)
 
     for key, value in changes.items():
         if value is not None:
-            source[key] = value
+            setattr(source, key, value)
 
-    source["updated_at"] = utc_now()
+    source.updated_at = utc_now()
 
-    save_sources(sources)
+    try:
+        db.commit()
+        db.refresh(source)
 
-    return public_source(source)
+        return public_source(source)
+
+    except SQLAlchemyError:
+        db.rollback()
+        database_error()
 
 
 @router.delete("/{source_id}")
 def delete_video_source(
     source_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    sources = load_sources()
-    find_source(sources, source_id)
 
-    updated_sources = [
-        source
-        for source in sources
-        if source.get("id") != source_id
-    ]
+    source = find_source(
+        db,
+        source_id,
+        current_user.id,
+    )
 
-    save_sources(updated_sources)
+    try:
+        db.delete(source)
+        db.commit()
 
-    return {
-        "success": True,
-        "message": "Video source deleted successfully.",
-        "source_id": source_id,
-    }
+        return {
+            "success": True,
+            "message": "Video source deleted successfully.",
+            "source_id": source_id,
+        }
+
+    except SQLAlchemyError:
+        db.rollback()
+        database_error()
 
 
 @router.post("/{source_id}/test")
 def test_video_source(
     source_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ) -> Dict[str, Any]:
-    sources = load_sources()
-    source = find_source(sources, source_id)
+
+    source = find_source(
+        db,
+        source_id,
+        current_user.id,
+    )
 
     tested_at = utc_now()
     connected = False
     error_message = None
     width = None
     height = None
-
     capture = None
 
     try:
-        # Network capture must be performed by the backend,
-        # not directly by the browser.
-        capture = cv2.VideoCapture(
-            source["url"],
-            cv2.CAP_FFMPEG,
-        )
+        capture = open_capture(source.url)
 
         if not capture.isOpened():
             error_message = (
@@ -445,11 +472,10 @@ def test_video_source(
                 height, width = frame.shape[:2]
 
     except Exception as error:
-        # Do not return the full exception because it might contain
-        # credentials embedded in the source address.
-        print(
-            f"Video source test failed for {source_id}: "
-            f"{type(error).__name__}"
+        logger.warning(
+            "Video source test failed for %s: %s",
+            source_id,
+            type(error).__name__,
         )
 
         error_message = (
@@ -461,22 +487,23 @@ def test_video_source(
         if capture is not None:
             capture.release()
 
-    for item in sources:
-        if item.get("id") == source_id:
-            item["last_tested_at"] = tested_at
-            item["last_connection_status"] = (
-                "connected" if connected else "failed"
-            )
-            item["updated_at"] = utc_now()
-            break
+    source.last_tested_at = tested_at
+    source.last_connection_status = (
+        "connected" if connected else "failed"
+    )
+    source.updated_at = utc_now()
 
-    save_sources(sources)
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        database_error()
 
     return {
         "source_id": source_id,
         "connected": connected,
         "status": "connected" if connected else "failed",
-        "tested_at": tested_at,
+        "tested_at": tested_at.isoformat(),
         "width": width,
         "height": height,
         "message": (

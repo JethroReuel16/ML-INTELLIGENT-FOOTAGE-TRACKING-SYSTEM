@@ -1,0 +1,50 @@
+# --- Secrets / local config ---
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+venv/
+.venv/
+.venv-*/
+**/venv/
+*.egg-info/
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+out/
+
+# --- Runtime data (never commit footage, evidence or uploads) ---
+backend/uploads/
+backend/results/
+backend/debug_crops/
+backend/storage/
+ml-engene/results/
+ml-engene/debug_crops/
+footage/
+
+# --- Model weights (downloaded automatically on first use) ---
+*.pt
+*.onnx
+backend/mobileclip_blt.ts
+
+# --- Archives / OS / editor ---
+*.zip
+.DS_Store
+Thumbs.db
+*.ipynb_checkpoints
+
+# --- Legacy source list (may contain camera credentials) ---
+backend/data/video_sources.json
+
+# --- Partial downloads / stray tooling ---
+*.part
+ml-engene/package.json
+ml-engene/package-lock.json

@@ -1,6 +1,19 @@
-ultralytics
-opencv-python
-numpy
-Pillow
-supervision
-tranformers 
+# ML Footage Tracking System - ML engine dependencies.
+# Pinned to the versions the test suite and the backend were verified with
+# (Python 3.14). The backend's requirements.txt installs the same set.
+#
+# CPU-only PyTorch (much smaller download):
+#   pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
+
+torch==2.14.0
+torchvision==0.29.0
+ultralytics==8.4.155        # YOLOE (open-vocabulary) + YOLO11
+transformers==5.17.0        # DINOv2
+supervision==0.30.4         # ByteTrack. Do NOT upgrade to >=0.31: sv.ByteTrack is removed there.
+opencv-python==5.0.0.93
+pillow==12.3.0
+numpy==2.5.3
+
+# development / testing
+pytest==9.2.0
+psutil

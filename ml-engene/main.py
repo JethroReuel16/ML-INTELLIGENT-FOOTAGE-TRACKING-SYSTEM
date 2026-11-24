@@ -1,244 +1,90 @@
-from pipeline.search_pipeline import VisionTracePipeline
+"""
+ML Footage Tracking System - command-line search.
+
+Runs one search directly against the ML engine (no API or database), which is
+useful for checking a server's models and performance.
+
+    python main.py --video clip.mp4 --reference backpack.jpg
+    python main.py --video clip.mp4 --text "black backpack" --interval 10
+    python main.py --video clip.mp4 --reference ref.jpg --text backpack --json
+
+Configuration (detector, device, ...) comes from the environment; see
+ml_config.py.
+"""
+
+import argparse
+import json
+import logging
+import sys
+import time
+
+from detection.base import DetectorCapabilityError
 
 
-# ============================================================
-# VISIONTRACE AI
-# FINAL ML ENGINE ENTRY POINT
-# ============================================================
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Search a video for an object.")
+    parser.add_argument("--video", required=True, help="Video file to search.")
+    parser.add_argument("--reference", help="Reference image of the object.")
+    parser.add_argument("--text", help='Text description, e.g. "black backpack".')
+    parser.add_argument("--interval", type=int, default=5, help="Analyse every Nth frame (default 5).")
+    parser.add_argument("--confidence", type=float, default=0.25, help="Minimum detection confidence (default 0.25).")
+    parser.add_argument("--max-results", type=int, default=10, help="Maximum ranked candidates (default 10).")
+    parser.add_argument("--results-dir", default="results", help="Where evidence images are written.")
+    parser.add_argument("--json", action="store_true", help="Print the full result as JSON.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Log every observation.")
+    args = parser.parse_args(argv)
 
-REFERENCE_IMAGE = "reference.jpg"
-VIDEO_PATH = "test_video.mp4"
+    if not args.reference and not args.text:
+        parser.error("provide --reference, --text, or both")
+
+    return args
 
 
-def main():
-    print("=" * 60)
-    print("VISIONTRACE AI - ML ENGINE")
-    print("=" * 60)
+def main(argv=None):
+    args = parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
-    print("\nInitializing VisionTrace ML pipeline...")
+    from pipeline.search_pipeline import VisionTracePipeline
 
-    # --------------------------------------------------------
-    # Initialize the complete ML pipeline
-    #
-    # Components:
-    #   YOLO      -> object detection
-    #   ByteTrack -> object tracking
-    #   DINOv2   -> visual feature extraction
-    #   Cosine    -> visual similarity
-    # --------------------------------------------------------
-
-    pipeline = VisionTracePipeline()
-
-    print("\nML pipeline initialized successfully.")
-
-    print("\n" + "-" * 60)
-    print("SEARCH CONFIGURATION")
-    print("-" * 60)
-
-    print(f"Reference image : {REFERENCE_IMAGE}")
-    print(f"Video           : {VIDEO_PATH}")
-    print("Frame interval  : 5")
-    print("Min confidence  : 0.25")
-    print("Maximum results : 20")
-
-    print("\n" + "-" * 60)
-    print("STARTING OBJECT SEARCH")
-    print("-" * 60)
-
-    # --------------------------------------------------------
-    # Run complete object search
-    # --------------------------------------------------------
+    started = time.monotonic()
+    pipeline = VisionTracePipeline(results_folder=args.results_dir)
+    loaded = time.monotonic() - started
 
     try:
         report = pipeline.search(
-            reference_image=REFERENCE_IMAGE,
-            video_path=VIDEO_PATH,
-            frame_interval=5,
-            min_detection_confidence=0.25,
-            max_results=20,
+            reference_image=args.reference,
+            video_path=args.video,
+            text_prompt=args.text,
+            frame_interval=args.interval,
+            min_detection_confidence=args.confidence,
+            max_results=args.max_results,
         )
+    except (DetectorCapabilityError, FileNotFoundError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
 
-    except Exception as error:
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+        return 0
 
-        print("\n" + "=" * 60)
-        print("ML ENGINE ERROR")
-        print("=" * 60)
+    search = report["search"]
+    print(f"\nSearch {report['search_id']} ({search['search_mode']}, detector {search['detector']['active']})")
+    print(f"Models loaded in {loaded:.1f}s; video analysed in {search['processing_seconds']:.1f}s "
+          f"({search['frames_analyzed']} frames, {search['unique_tracks']} tracks)\n")
 
-        print(f"\n{error}")
+    if not report["matches"]:
+        print("No candidates found.")
+    for match in report["matches"]:
+        score = match["similarity_score"] if match["similarity_score"] is not None else match["detection_confidence"]
+        print(f"#{match['rank']:<3} {match['match_status']:<15} {match['class_name']:<14} "
+              f"score {score:.3f}  at {match['timestamp']:7.2f}s  track {match['track_id']}")
+        print(f"     evidence: {match['evidence_image']}")
 
-        raise
-
-    # --------------------------------------------------------
-    # Extract report information
-    # --------------------------------------------------------
-
-    search_info = report.get("search", {})
-    video_info = report.get("video", {})
-    matches = report.get("matches", [])
-    files = report.get("files", {})
-
-    # --------------------------------------------------------
-    # Final search summary
-    # --------------------------------------------------------
-
-    print("\n" + "=" * 60)
-    print("VISIONTRACE AI - SEARCH COMPLETE")
-    print("=" * 60)
-
-    print("\nVIDEO")
-    print("-" * 60)
-
-    print(
-        f"Resolution      : "
-        f"{video_info.get('width')}x"
-        f"{video_info.get('height')}"
-    )
-
-    print(
-        f"FPS             : "
-        f"{video_info.get('fps', 0):.2f}"
-    )
-
-    print(
-        f"Frames          : "
-        f"{video_info.get('frame_count', 0)}"
-    )
-
-    print(
-        f"Duration        : "
-        f"{video_info.get('duration', 0):.2f} seconds"
-    )
-
-    print("\nSEARCH")
-    print("-" * 60)
-
-    print(
-        f"Frames analyzed         : "
-        f"{search_info.get('frames_analyzed', 0)}"
-    )
-
-    print(
-        f"Candidate observations  : "
-        f"{search_info.get('candidate_observations', 0)}"
-    )
-
-    print(
-        f"Unique tracks           : "
-        f"{search_info.get('unique_tracks', 0)}"
-    )
-
-    print(
-        f"Ranked matches          : "
-        f"{len(matches)}"
-    )
-
-    # --------------------------------------------------------
-    # Display top candidates
-    # --------------------------------------------------------
-
-    print("\nTOP CANDIDATES")
-    print("-" * 60)
-
-    if not matches:
-
-        print("No candidate objects were found.")
-
-    else:
-
-        for index, match in enumerate(matches[:10], start=1):
-
-            status = match.get(
-                "match_status",
-                "CANDIDATE"
-            )
-
-            track_id = match.get(
-                "track_id",
-                "N/A"
-            )
-
-            class_name = match.get(
-                "class_name",
-                "unknown"
-            )
-
-            ranking_score = match.get(
-                "ranking_score",
-                0.0
-            )
-
-            # The pipeline uses best_similarity.
-            best_similarity = match.get(
-                "best_similarity",
-                0.0
-            )
-
-            timestamp = match.get(
-                "timestamp",
-                0.0
-            )
-
-            print(
-                f"{index}. "
-                f"{status} | "
-                f"Track {track_id} | "
-                f"{class_name} | "
-                f"Ranking Score "
-                f"{ranking_score:.4f} | "
-                f"Best Similarity "
-                f"{best_similarity:.4f} | "
-                f"Time "
-                f"{timestamp:.2f}s"
-            )
-
-    # --------------------------------------------------------
-    # Output files
-    # --------------------------------------------------------
-
-    print("\nOUTPUT FILES")
-    print("-" * 60)
-
-    if files:
-
-        for name, path in files.items():
-
-            print(
-                f"{name}: {path}"
-            )
-
-    else:
-
-        print(
-            "Output file information not available."
-        )
-
-    # --------------------------------------------------------
-    # Result interpretation
-    # --------------------------------------------------------
-
-    print("\n" + "-" * 60)
-    print("RESULT INTERPRETATION")
-    print("-" * 60)
-
-    print(
-        "The highest-ranked candidate is the strongest "
-        "visual candidate identified by the ML pipeline."
-    )
-
-    print(
-        "Similarity and ranking scores are not probability "
-        "or identity-confidence values."
-    )
-
-    print(
-        "Candidates are ranked using visual similarity "
-        "and tracking observations."
-    )
-
-    print("\n" + "=" * 60)
-    print("VISIONTRACE AI ML ENGINE FINISHED")
-    print("=" * 60)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
