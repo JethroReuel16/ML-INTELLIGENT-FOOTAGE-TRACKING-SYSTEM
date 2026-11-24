@@ -82,6 +82,19 @@ ML_REAL_MODELS=1 pytest      # also checks real DINOv2 batching (downloads ~350 
   faster than CPU for both detection and embedding.
 - The first search after start-up also loads the models (tens of seconds).
 
+## Failure handling
+
+- **GPU configured but unavailable** (`DETECTOR_DEVICE=cuda` without a
+  working CUDA setup): the engine runs on the CPU, logs a warning and reports
+  the reason in every result (`detector.device_fallback_reason`).
+- **Unreadable video** (corrupt, incomplete, unsupported codec): searches
+  fail with `VideoReadError` and a clear message (the API returns HTTP 400).
+- **Video that stops decoding part-way**: the readable part is searched and
+  the result is flagged `video_ended_early`.
+- **YOLOE cannot load**: falls back to YOLO11n and reports why.
+- Memory stays bounded on busy footage: only one compressed evidence crop per
+  track is kept while analysing.
+
 ## Known limitation
 
 `supervision.ByteTrack` is deprecated and removed in supervision 0.31, so the

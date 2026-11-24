@@ -113,6 +113,38 @@ def models_dir():
     return os.path.abspath(value) if value else None
 
 
+def resolve_device(requested):
+    """
+    Return (device, reason). Falls back to CPU, with a reason, when the
+    requested accelerator is not usable, instead of crashing every search.
+    """
+    device = (requested or "cpu").strip().lower()
+
+    try:
+        import torch
+    except ImportError:
+        return "cpu", None
+
+    if device.startswith("cuda"):
+        if not torch.cuda.is_available():
+            return "cpu", f"'{device}' requested but CUDA is not available"
+        if ":" in device:
+            try:
+                index = int(device.split(":", 1)[1])
+            except ValueError:
+                return "cpu", f"invalid CUDA device '{device}'"
+            if index >= torch.cuda.device_count():
+                return "cpu", f"'{device}' requested but only {torch.cuda.device_count()} GPU(s) found"
+    elif device == "mps":
+        mps = getattr(torch.backends, "mps", None)
+        if not (mps and mps.is_available()):
+            return "cpu", "'mps' requested but Apple Metal is not available"
+    elif device != "cpu":
+        return "cpu", f"unknown device '{device}'"
+
+    return device, None
+
+
 def save_debug_crops():
     """Whether to write every observed crop to the debug folder."""
     return _env_bool("ML_SAVE_DEBUG_CROPS", False)

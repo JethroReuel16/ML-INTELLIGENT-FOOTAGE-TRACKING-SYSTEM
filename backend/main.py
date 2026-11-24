@@ -32,6 +32,10 @@ async def lifespan(_app: FastAPI):
     )
     if settings.is_production and not settings.secure_cookies:
         logger.warning("COOKIE_SECURE is off in production; sessions will travel over plain HTTP.")
+    if settings.preload_models:
+        from app.services.search_service import search_service
+
+        search_service.preload_in_background()
     yield
     engine.dispose()
 
@@ -46,6 +50,38 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
 
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+# Whole-request ceiling for uploads: video + reference image + form fields.
+MAX_REQUEST_BYTES = (settings.max_video_upload_mb + settings.max_image_upload_mb + 1) * 1024 * 1024
+
+
+@app.middleware("http")
+async def request_guards(request: Request, call_next):
+    """
+    - Refuse state-changing requests from browser origins that are not
+      allowed (CSRF defence in depth on top of SameSite cookies).
+    - Refuse oversized uploads from their declared size, before the body is
+      spooled to disk.
+    """
+    if request.method in UNSAFE_METHODS:
+        origin = request.headers.get("origin")
+        if origin and origin.rstrip("/") not in settings.cors_origins:
+            logger.warning("Blocked %s %s from origin %s", request.method, request.url.path, origin)
+            return JSONResponse(status_code=403, content={"detail": "Request origin not allowed."})
+
+        length = request.headers.get("content-length")
+        if length and length.isdigit() and int(length) > MAX_REQUEST_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"The upload is too large. The limit is {settings.max_video_upload_mb} MB."},
+            )
+
+    return await call_next(request)
+
+
+# Added last so it is the outermost layer: every response, including the
+# guards' rejections, carries CORS headers the frontend can read.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -88,7 +124,11 @@ def readiness_check():
             status_code=503,
             content={"status": "unavailable", "database": "unreachable"},
         )
-    return {"status": "ready", "database": "ok"}
+    from app.services.search_service import search_service
+
+    # Model loading never makes the API "unready": searches simply wait for
+    # it. The state is reported so operators can see it.
+    return {"status": "ready", "database": "ok", "ml": search_service.status()}
 
 
 app.include_router(auth_router)

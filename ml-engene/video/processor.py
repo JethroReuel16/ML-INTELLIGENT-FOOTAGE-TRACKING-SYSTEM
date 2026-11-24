@@ -5,6 +5,10 @@ import cv2
 logger = logging.getLogger(__name__)
 
 
+class VideoReadError(ValueError):
+    """The video cannot be opened or decoded (corrupt, truncated, unsupported codec)."""
+
+
 class VideoProcessor:
     """Sequential frame reader that only decodes the frames it analyses."""
 
@@ -13,12 +17,17 @@ class VideoProcessor:
         self.capture = cv2.VideoCapture(video_path)
 
         if not self.capture.isOpened():
-            raise ValueError(f"Unable to open video: {video_path}")
+            raise VideoReadError(
+                "The video could not be opened. It may be corrupt, incomplete "
+                "or in an unsupported format."
+            )
 
         fps = self.capture.get(cv2.CAP_PROP_FPS)
         # Some recordings report 0 or absurd values; fall back to stream time.
         self.fps = fps if fps and 0 < fps <= 240 else 0.0
         self.frame_count = max(0, int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0))
+        self.reported_frame_count = self.frame_count
+        self.frames_read = 0
 
     def get_video_info(self):
         width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -70,9 +79,17 @@ class VideoProcessor:
         finally:
             self.capture.release()
 
+        self.frames_read = frame_number
+
         # Container metadata can under-report; keep the real count.
         if frame_number > self.frame_count:
             self.frame_count = frame_number
+
+    @property
+    def ended_early(self):
+        """True when decoding stopped well before the container's frame count."""
+        reported = self.reported_frame_count
+        return reported > 0 and self.frames_read < reported * 0.9
 
     def close(self):
         if self.capture.isOpened():

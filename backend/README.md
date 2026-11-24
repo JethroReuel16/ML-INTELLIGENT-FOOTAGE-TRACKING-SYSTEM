@@ -48,9 +48,37 @@ All settings are environment variables (or `backend/.env`); see
 | `CORS_ORIGINS` | Exact frontend origin(s), comma-separated |
 | `COOKIE_SECURE`, `COOKIE_DOMAIN`, `COOKIE_SAMESITE` | Session cookie |
 | `STORAGE_DIR` | Persistent folder for uploads, results and evidence |
-| `ALLOWED_SOURCE_ROOTS` | Folders "local"/"network" sources may read |
+| `ALLOWED_SOURCE_ROOTS` | Folders "local"/"network" sources may read (required for file sources in production) |
+| `ALLOW_REGISTRATION` | Self sign-up; **off by default in production** |
+| `ALLOW_LOOPBACK_SOURCES` | Sources on this machine (127.0.0.1); off by default in production |
+| `FORWARDED_ALLOW_IPS` | Docker only: proxy IPs trusted for `X-Forwarded-For` (default `127.0.0.1`) |
 | `MAX_VIDEO_UPLOAD_MB` | Upload limit (default 2048) |
 | `DETECTOR_DEVICE` | `cpu`, `cuda`, … |
+
+## Accounts
+
+In production self-registration is off. Create and manage investigator
+accounts from the server:
+
+```bash
+python manage.py create-user --email ana@example.org --name "Ana Phiri"   # prompts for the password
+python manage.py list-users
+python manage.py set-active --email ana@example.org --inactive            # also signs them out
+# Docker:
+docker compose exec backend python /app/backend/manage.py create-user --email ... --name ...
+```
+
+## Security model
+
+- Every data endpoint is scoped to the signed-in user.
+- Video sources: file paths only inside `ALLOWED_SOURCE_ROOTS`; network
+  sources may never target cloud-metadata / link-local addresses (redirects
+  are re-checked); loopback is refused in production. Private LAN cameras
+  are allowed.
+- State-changing requests from browser origins outside `CORS_ORIGINS` are
+  refused; uploads over the limit are rejected from their declared size.
+- Sign-in is throttled per IP + email and takes the same time whether or not
+  the account exists.
 
 ## API overview
 

@@ -3,12 +3,12 @@
 import { UserPlus } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 import AuthLayout from "@/components/AuthLayout";
 import PasswordInput from "@/components/PasswordInput";
-import { Alert, Button, Field } from "@/components/ui";
-import { registerUser } from "@/services/api";
+import { Alert, Button, ButtonLink, Field } from "@/components/ui";
+import { getAuthConfig, registerUser } from "@/services/api";
 
 const MIN_PASSWORD = 8;
 
@@ -22,6 +22,17 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [touched, setTouched] = useState(false);
+  const [registrationOpen, setRegistrationOpen] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getAuthConfig()
+      .then((config) => alive && setRegistrationOpen(config.registration_enabled))
+      .catch(() => alive && setRegistrationOpen(true)); // let the server decide on submit
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   const passwordError =
     touched && password.length > 0 && password.length < MIN_PASSWORD
@@ -49,6 +60,20 @@ export default function RegisterPage() {
       setError(err instanceof Error ? err.message : "Registration failed. Please try again.");
       setLoading(false);
     }
+  }
+
+  if (registrationOpen === false) {
+    return (
+      <AuthLayout title="Accounts are managed by your administrator" subtitle="Self-registration is turned off on this server.">
+        <Alert tone="info">
+          Ask an administrator to create an account for you. They can do this with the server&apos;s
+          management command.
+        </Alert>
+        <ButtonLink href="/login" variant="secondary" className="mt-6 w-full">
+          Back to sign in
+        </ButtonLink>
+      </AuthLayout>
+    );
   }
 
   return (

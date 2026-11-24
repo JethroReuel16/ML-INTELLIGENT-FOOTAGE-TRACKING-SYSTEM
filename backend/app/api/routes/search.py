@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import cv2
 
@@ -38,10 +38,12 @@ from app.models import (
 )
 
 from app.config import settings
+from app.source_policy import check_file_source, check_network_target
 from app.storage import UPLOADS_DIR, RESULTS_DIR
 
 from app.services.search_service import (
     DetectorCapabilityError,
+    VideoReadError,
     parse_text_prompts,
     resolve_search_mode,
     search_service,
@@ -451,6 +453,10 @@ def run_pipeline_search(
     )
     started = time.monotonic()
 
+    # End the request's read transaction so no pooled connection sits
+    # "idle in transaction" for the minutes the ML pipeline runs.
+    db.commit()
+
     result = search_service.run_search(
         reference_image=reference_path,
         video_path=video_path,
@@ -500,22 +506,7 @@ def copy_recorded_file(
 
     path = Path(source_path)
 
-    if settings.allowed_source_roots:
-        real = os.path.realpath(str(path))
-        allowed = False
-        for root in settings.allowed_source_roots:
-            root_real = os.path.realpath(root)
-            try:
-                if os.path.commonpath([real, root_real]) == root_real:
-                    allowed = True
-                    break
-            except ValueError:
-                continue
-        if not allowed:
-            raise HTTPException(
-                status_code=403,
-                detail="This source path is outside the directories the server may read.",
-            )
+    check_file_source(str(path))
 
     if not path.is_file():
         raise HTTPException(
@@ -557,6 +548,22 @@ def copy_recorded_file(
     return destination
 
 
+class _CheckedRedirectHandler(HTTPRedirectHandler):
+    """Re-apply the network policy to every redirect target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.lower().startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=400,
+                detail="The HTTP source redirected to an unsupported address.",
+            )
+        check_network_target(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_http_opener = build_opener(_CheckedRedirectHandler())
+
+
 def download_http_video(
     source_url: str,
     destination_folder: str,
@@ -573,13 +580,15 @@ def download_http_video(
         f"source_video{extension}",
     )
 
-    request = Request(
+    request = Request(  # noqa: S310 - scheme limited to http(s) at registration; SSRF-checked below
         source_url,
         headers={"User-Agent": "MLFootageTracking/1.0"},
     )
 
     try:
-        with urlopen(request, timeout=20) as response:
+        check_network_target(source_url)
+
+        with _http_opener.open(request, timeout=20) as response:  # noqa: S310 (scheme validated)
 
             content_type = response.headers.get(
                 "Content-Type", ""
@@ -649,6 +658,8 @@ def record_rtsp_window(
     destination_folder: str,
     duration_seconds: int,
 ) -> str:
+
+    check_network_target(source_url)
 
     destination = os.path.join(
         destination_folder,
@@ -785,6 +796,9 @@ def _search_failure(error: Exception, request_folder: str, db: Session, label: s
     if isinstance(error, DetectorCapabilityError):
         return HTTPException(status_code=400, detail=str(error))
 
+    if isinstance(error, VideoReadError):
+        return HTTPException(status_code=400, detail=str(error))
+
     if isinstance(error, FileNotFoundError):
         return HTTPException(
             status_code=400,
@@ -831,6 +845,10 @@ async def search_object(
     request_folder = os.path.join(UPLOADS_DIR, request_id)
 
     os.makedirs(request_folder, exist_ok=True)
+
+    # Saving uploads / recording streams can take minutes: don't hold a
+    # database connection meanwhile.
+    db.commit()
 
     try:
         # Everything below is blocking (disk I/O, ML inference, DB writes),
@@ -903,6 +921,10 @@ async def _run_source_search(
     request_folder = os.path.join(UPLOADS_DIR, request_id)
 
     os.makedirs(request_folder, exist_ok=True)
+
+    # Saving uploads / recording streams can take minutes: don't hold a
+    # database connection meanwhile.
+    db.commit()
 
     try:
         reference_path = (

@@ -17,6 +17,10 @@ from app.database import get_db
 from app.models import User, AuthSession
 from app.security import hash_password, verify_password
 
+# A real hash to verify against when the email is unknown, so a failed login
+# takes the same time whether or not the account exists.
+_DUMMY_PASSWORD_HASH = hash_password("timing-equaliser-not-a-real-password")
+
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
@@ -156,11 +160,23 @@ def get_current_user(
     return user
 
 
+@router.get("/config")
+def auth_config():
+    """Public: what the sign-in screen should offer."""
+    return {"registration_enabled": settings.allow_registration}
+
+
 @router.post("/register", status_code=201)
 def register(
     data: RegisterRequest,
     db: Session = Depends(get_db),
 ):
+    if not settings.allow_registration:
+        raise HTTPException(
+            status_code=403,
+            detail="Self-registration is disabled. Ask an administrator for an account.",
+        )
+
     email = normalize_email(data.email)
 
     if "@" not in email or "." not in email.split("@")[-1]:
@@ -228,10 +244,12 @@ def login(
         .first()
     )
 
-    if not user or not verify_password(
+    password_ok = verify_password(
         data.password,
-        user.hashed_password
-    ):
+        user.hashed_password if user else _DUMMY_PASSWORD_HASH,
+    )
+
+    if not user or not password_ok:
         record_failed_login(throttle_key)
         logger.info("Failed sign-in attempt from %s", _client_ip(request))
         raise HTTPException(

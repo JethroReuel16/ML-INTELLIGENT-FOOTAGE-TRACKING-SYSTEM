@@ -2,6 +2,8 @@
 import logging
 import os
 import sys
+import threading
+import time
 from typing import Any, Dict, Optional
 
 from app.config import settings
@@ -22,24 +24,62 @@ from pipeline.search_pipeline import (
     VisionTracePipeline,
     resolve_search_mode,
 )
+from video.processor import VideoReadError
 
 
 class SearchService:
     def __init__(self):
         self.pipeline = None
+        # Serialises model loading: two searches arriving together on a
+        # fresh server must not load the (large) models twice.
+        self._init_lock = threading.Lock()
+        self.state = "not_loaded"  # not_loaded | loading | ready | error
+        self.error = None
 
     def _get_pipeline(self):
-        if self.pipeline is None:
-            logger.info("Initializing ML pipeline (first search may take a while)...")
+        if self.pipeline is not None:
+            return self.pipeline
 
-            self.pipeline = VisionTracePipeline(
-                debug_folder=DEBUG_CROPS_DIR,
-                results_folder=RESULTS_DIR,
-            )
-
-            logger.info("ML pipeline initialized.")
+        with self._init_lock:
+            if self.pipeline is None:
+                self.state, self.error = "loading", None
+                started = time.monotonic()
+                logger.info("Loading ML models...")
+                try:
+                    self.pipeline = VisionTracePipeline(
+                        debug_folder=DEBUG_CROPS_DIR,
+                        results_folder=RESULTS_DIR,
+                    )
+                except Exception as error:
+                    self.state, self.error = "error", f"{type(error).__name__}: {error}"
+                    logger.exception("ML models failed to load")
+                    raise
+                self.state = "ready"
+                logger.info("ML models ready in %.1fs.", time.monotonic() - started)
 
         return self.pipeline
+
+    def preload_in_background(self) -> None:
+        """Load the models at start-up so the first search does not wait."""
+
+        def load():
+            try:
+                self._get_pipeline()
+            except Exception:
+                pass  # already logged; the next search retries
+
+        threading.Thread(target=load, name="ml-preload", daemon=True).start()
+
+    def status(self) -> Dict[str, Any]:
+        """Model state without triggering a load (for health checks)."""
+        info = {"state": self.state}
+        if self.error:
+            info["error"] = self.error
+        if self.pipeline is not None:
+            info["detector"] = self.pipeline.detector_status.get("active")
+            info["device"] = self.pipeline.detector_status.get("device")
+            info["fallback"] = bool(self.pipeline.detector_status.get("fallback"))
+        return info
 
     def detector_status(self) -> Dict[str, Any]:
         """Active detector and fallback status (loads the pipeline)."""
@@ -84,6 +124,7 @@ search_service = SearchService()
 __all__ = [
     "search_service",
     "DetectorCapabilityError",
+    "VideoReadError",
     "parse_text_prompts",
     "resolve_search_mode",
 ]

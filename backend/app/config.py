@@ -41,6 +41,21 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_optional_bool(name: str) -> Optional[bool]:
+    return None if _env(name) is None else _env_bool(name, False)
+
+
+def _storage_dir() -> str:
+    """STORAGE_DIR; relative paths are resolved against the backend folder
+    (not the process working directory)."""
+    value = _env("STORAGE_DIR") or _env("VISIONTRACE_STORAGE_DIR")
+    if not value:
+        return BACKEND_DIR
+    if not os.path.isabs(value):
+        value = os.path.join(BACKEND_DIR, value)
+    return os.path.abspath(value)
+
+
 def _env_list(name: str, default: str = "") -> List[str]:
     raw = _env(name, default) or ""
     return [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
@@ -99,11 +114,17 @@ class Settings:
     login_window_seconds: int = field(default_factory=lambda: _env_int("LOGIN_WINDOW_SECONDS", 900))
 
     # Persistent storage for uploads, results and debug crops.
-    storage_dir: str = field(
-        default_factory=lambda: os.path.abspath(
-            _env("STORAGE_DIR") or _env("VISIONTRACE_STORAGE_DIR") or BACKEND_DIR
-        )
-    )
+    storage_dir: str = field(default_factory=_storage_dir)
+
+    # Self-service sign-up. Defaults to off in production: create accounts
+    # with `python manage.py create-user` instead.
+    registration_enabled: Optional[bool] = field(default_factory=lambda: _env_optional_bool("ALLOW_REGISTRATION"))
+
+    # Load the ML models in the background at start-up (default: production).
+    ml_preload: Optional[bool] = field(default_factory=lambda: _env_optional_bool("ML_PRELOAD"))
+
+    # Sources pointing at this server itself (127.0.0.1). Off in production.
+    loopback_sources: Optional[bool] = field(default_factory=lambda: _env_optional_bool("ALLOW_LOOPBACK_SOURCES"))
 
     # Upload limits.
     max_video_upload_mb: int = field(default_factory=lambda: _env_int("MAX_VIDEO_UPLOAD_MB", 2048))
@@ -140,6 +161,18 @@ class Settings:
         return self.cookie_secure if self.cookie_secure is not None else self.is_production
 
     @property
+    def allow_registration(self) -> bool:
+        return self.registration_enabled if self.registration_enabled is not None else not self.is_production
+
+    @property
+    def preload_models(self) -> bool:
+        return self.ml_preload if self.ml_preload is not None else self.is_production
+
+    @property
+    def allow_loopback_sources(self) -> bool:
+        return self.loopback_sources if self.loopback_sources is not None else not self.is_production
+
+    @property
     def docs_enabled(self) -> bool:
         return self.enable_docs if self.enable_docs is not None else not self.is_production
 
@@ -148,6 +181,12 @@ settings = Settings()
 
 if settings.cookie_samesite not in {"lax", "strict", "none"}:
     raise RuntimeError("COOKIE_SAMESITE must be lax, strict or none.")
+
+if "*" in settings.cors_origins:
+    raise RuntimeError(
+        "CORS_ORIGINS cannot be '*': browsers refuse credentialed requests to a "
+        "wildcard origin. List the exact frontend origin(s)."
+    )
 
 if settings.cookie_samesite == "none" and not settings.secure_cookies:
     raise RuntimeError("COOKIE_SAMESITE=none requires COOKIE_SECURE=true (HTTPS).")

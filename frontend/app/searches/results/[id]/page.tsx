@@ -155,6 +155,22 @@ export default function SearchResultPage() {
         </div>
       )}
 
+      {search.video_ended_early && (
+        <div className="mb-6 flex gap-3 rounded-lg border border-warn/35 bg-warn/10 px-4 py-3 text-sm text-fg-2">
+          <TriangleAlert size={18} className="shrink-0 text-warn" aria-hidden />
+          Part of this video could not be read (the file may be incomplete or damaged). Results cover
+          only the footage up to that point.
+        </div>
+      )}
+
+      {search.detector?.device_fallback_reason && (
+        <div className="mb-6 flex gap-3 rounded-lg border border-info/35 bg-info/10 px-4 py-3 text-sm text-fg-2">
+          <TriangleAlert size={18} className="shrink-0 text-info" aria-hidden />
+          This search ran on the CPU because the configured accelerator was unavailable (
+          {search.detector.device_fallback_reason}). Ask an administrator to check the server&apos;s GPU setup.
+        </div>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
         {/* Candidates */}
         <Card className="min-w-0">

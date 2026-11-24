@@ -1,8 +1,10 @@
+import io
 import logging
 import os
 import threading
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from ml_config import (
@@ -10,11 +12,12 @@ from ml_config import (
     dino_settings,
     high_detail_imgsz,
     parse_text_prompts,
+    resolve_device,
     save_debug_crops,
 )
 from detection.base import DetectorCapabilityError
 from utils.image_utils import crop_object
-from video.processor import VideoProcessor
+from video.processor import VideoProcessor, VideoReadError
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,12 @@ EVIDENCE_JPEG_QUALITY = 92
 
 # How often a running search logs its progress.
 PROGRESS_LOG_SECONDS = 15
+
+
+def _jpeg_bytes(image):
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=EVIDENCE_JPEG_QUALITY)
+    return buffer.getvalue()
 
 
 def resolve_search_mode(reference_image, text_prompt, requested=None):
@@ -112,6 +121,13 @@ class VisionTracePipeline:
         started = time.monotonic()
 
         self.config = config or DetectorConfig.from_env()
+
+        # A misconfigured accelerator must not break every search: fall back
+        # to CPU and report why.
+        device, device_note = resolve_device(self.config.device)
+        if device_note:
+            logger.warning("%s; running on CPU instead.", device_note)
+            self.config = replace(self.config, device=device)
         self.debug_folder = debug_folder
         self.results_folder = results_folder
         self.save_debug_crops = save_debug_crops()
@@ -138,6 +154,8 @@ class VisionTracePipeline:
             "fallback": False,
             "fallback_reason": None,
         }
+        self.detector_status["device"] = self.config.device
+        self.detector_status["device_fallback_reason"] = device_note
 
         # Legacy override kept for compatibility with older callers.
         self._legacy_allowed = (
@@ -409,6 +427,7 @@ class VisionTracePipeline:
                 "unique_tracks": summary["unique_tracks"],
                 "candidates": len(matches),
                 "processing_seconds": summary["processing_seconds"],
+                "video_ended_early": summary["video_ended_early"],
             },
             "matches": matches,
             "files": {
@@ -479,7 +498,7 @@ class VisionTracePipeline:
         )
 
         frame_results = []
-        best_crops = {}  # track_id -> (similarity, PIL crop) for evidence
+        best_crops = {}  # track_id -> (similarity, JPEG bytes) for evidence
         frames_analyzed = 0
 
         # Long videos take minutes on CPU: report progress so the log never
@@ -583,9 +602,11 @@ class VisionTracePipeline:
 
                     # Keep only the best-scoring crop per track (first wins on ties,
                     # matching aggregate_tracks' choice of best observation).
+                    # Stored JPEG-compressed: a raw crop can be megabytes, and
+                    # busy footage produces hundreds of tracks.
                     previous = best_crops.get(track_id)
                     if previous is None or score > previous[0]:
-                        best_crops[track_id] = (score, crop)
+                        best_crops[track_id] = (score, _jpeg_bytes(crop))
 
                     frame_results.append({
                         "frame_number": frame_number,
@@ -606,6 +627,22 @@ class VisionTracePipeline:
                     )
         finally:
             processor.close()
+
+        if frames_analyzed == 0:
+            raise VideoReadError(
+                "No frames could be decoded from this video. It may be corrupt "
+                "or use an unsupported codec."
+            )
+
+        ended_early = processor.ended_early
+        if ended_early:
+            logger.warning(
+                "%s: decoding stopped at frame %d of %d reported; results cover "
+                "only the readable part of the footage.",
+                os.path.basename(video_path),
+                processor.frames_read,
+                processor.reported_frame_count,
+            )
 
         # Container metadata may be corrected after a full read.
         video_info["frame_count"] = max(video_info["frame_count"], processor.frame_count)
@@ -629,6 +666,7 @@ class VisionTracePipeline:
             "unique_tracks": len(self._get_unique_track_ids(frame_results)),
             "results": len(track_results),
             "processing_seconds": round(time.monotonic() - started, 2),
+            "video_ended_early": ended_early,
         }
 
         return {
@@ -720,7 +758,8 @@ class VisionTracePipeline:
         crop = candidate.get("crop")
 
         if crop is not None:
-            crop.save(destination, format="JPEG", quality=EVIDENCE_JPEG_QUALITY)
+            with open(destination, "wb") as handle:
+                handle.write(crop)
         elif candidate.get("crop_path") and os.path.isfile(candidate["crop_path"]):
             import shutil
 

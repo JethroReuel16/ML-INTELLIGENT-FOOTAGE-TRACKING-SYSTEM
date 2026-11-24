@@ -17,7 +17,9 @@ cp .env.example .env          # set POSTGRES_PASSWORD
 docker compose up -d --build
 ```
 
-- Web console: http://localhost:3000 — create an account, then start a search.
+- Web console: http://localhost:3000
+- Create the first account (self-registration is off in production):
+  `docker compose exec backend python /app/backend/manage.py create-user --email you@example.org --name "Your Name"`
 - API: http://localhost:8000 (`/health`, `/health/ready`)
 
 The first search downloads model weights (~1 GB) and is slower than later ones.

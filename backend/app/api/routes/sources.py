@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.api.routes.auth import get_current_user
 from app.database import get_db
 from app.models import VideoSource
+from app.source_policy import check_source
 
 
 logger = logging.getLogger(__name__)
@@ -140,6 +141,9 @@ def validate_source_type(source_type: str, url: str) -> str:
                     "(MP4, AVI, MOV, MKV, WebM, M4V or MPEG), not a folder."
                 ),
             )
+
+    # Where the source may point (file allow-list, no SSRF targets).
+    check_source(normalized_type, url)
 
     return normalized_type
 
@@ -444,6 +448,10 @@ def test_video_source(
         source_id,
         current_user.id,
     )
+
+    # Re-check on every use: the policy (or DNS) may have changed since the
+    # source was registered.
+    check_source(source.source_type, source.url)
 
     tested_at = utc_now()
     connected = False

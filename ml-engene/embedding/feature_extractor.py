@@ -13,11 +13,12 @@ class DINOv2FeatureExtractor:
     def __init__(self, model_name="facebook/dinov2-base", device="cpu", batch_size=16):
         logger.info("Loading DINOv2 model (%s)...", model_name)
 
-        try:
-            self.device = torch.device(device)
-        except (RuntimeError, TypeError):
-            logger.warning("Invalid DINO device %r; using CPU.", device)
-            self.device = torch.device("cpu")
+        from ml_config import resolve_device
+
+        resolved, reason = resolve_device(device)
+        if reason:
+            logger.warning("DINOv2: %s; using CPU.", reason)
+        self.device = torch.device(resolved)
 
         self.batch_size = max(1, int(batch_size))
         self.processor, self.model = self._load(model_name)

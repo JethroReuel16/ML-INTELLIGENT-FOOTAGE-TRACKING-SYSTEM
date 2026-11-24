@@ -9,7 +9,7 @@ import AuthLayout from "@/components/AuthLayout";
 import { useAuth } from "@/components/AppChrome";
 import PasswordInput from "@/components/PasswordInput";
 import { Alert, Button, Field } from "@/components/ui";
-import { getCurrentUser, loginUser } from "@/services/api";
+import { getAuthConfig, getCurrentUser, loginUser } from "@/services/api";
 
 /** Only allow same-site relative redirects. */
 function safeNext(value: string | null): string {
@@ -28,6 +28,20 @@ function LoginForm() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [registrationOpen, setRegistrationOpen] = useState(false);
+
+  // Only advertise sign-up when the server allows it.
+  useEffect(() => {
+    let alive = true;
+    getAuthConfig()
+      .then((config) => alive && setRegistrationOpen(config.registration_enabled))
+      .catch(() => {
+        /* keep the link hidden */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // Already signed in? Skip the form.
   useEffect(() => {
@@ -105,9 +119,13 @@ function LoginForm() {
 
       <p className="text-center text-sm text-muted">
         Don&apos;t have an account?{" "}
-        <Link href="/register" className="font-semibold text-accent hover:underline">
-          Create one
-        </Link>
+        {registrationOpen ? (
+          <Link href="/register" className="font-semibold text-accent hover:underline">
+            Create one
+          </Link>
+        ) : (
+          "Ask your administrator to create one."
+        )}
       </p>
     </form>
   );

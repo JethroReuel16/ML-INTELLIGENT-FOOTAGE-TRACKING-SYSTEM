@@ -301,3 +301,79 @@ def test_high_detail_size_is_restored_when_search_fails(tmp_path, video):
         pipeline.search(reference_image=make_reference(str(tmp_path / "r.png"), RED),
                         video_path=video, high_detail=True)
     assert detector.imgsz == 640
+
+
+# ------------------------------------------------------------- robustness review
+
+
+def test_resolve_device_falls_back_when_accelerator_missing(monkeypatch):
+    import torch
+
+    from ml_config import resolve_device
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert resolve_device("cpu") == ("cpu", None)
+    device, reason = resolve_device("cuda")
+    assert device == "cpu" and "CUDA is not available" in reason
+    assert resolve_device("tpu")[0] == "cpu"
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    assert resolve_device("cuda:0") == ("cuda:0", None)
+    assert resolve_device("cuda:3")[0] == "cpu"
+
+
+def test_pipeline_runs_on_cpu_when_gpu_configured_but_missing(tmp_path, video, monkeypatch):
+    import torch
+
+    from ml_config import DetectorConfig
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    pipeline = build(tmp_path, config=DetectorConfig(device="cuda"))
+    assert pipeline.config.device == "cpu"
+    assert "CUDA" in pipeline.detector_status["device_fallback_reason"]
+
+    result = pipeline.search(reference_image=make_reference(str(tmp_path / "r.png"), RED),
+                             video_path=video, frame_interval=20)
+    assert result["search"]["detector"]["device"] == "cpu"
+
+
+def test_unreadable_video_raises_clear_error(tmp_path):
+    from video.processor import VideoReadError
+
+    bad = tmp_path / "broken.mp4"
+    bad.write_bytes(b"this is not a video")
+    pipeline = build(tmp_path)
+    with pytest.raises(VideoReadError, match="could not be opened"):
+        pipeline.search(reference_image=make_reference(str(tmp_path / "r.png"), RED), video_path=str(bad))
+
+
+def test_truncated_footage_is_flagged(tmp_path, video, monkeypatch):
+    import video.processor as vp
+
+    original = vp.VideoProcessor.__init__
+
+    def claims_more_frames(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self.reported_frame_count = self.frame_count * 3  # container says 3x longer
+
+    monkeypatch.setattr(vp.VideoProcessor, "__init__", claims_more_frames)
+    result = build(tmp_path).search(reference_image=make_reference(str(tmp_path / "r.png"), RED),
+                                    video_path=video, frame_interval=10)
+    assert result["search"]["video_ended_early"] is True
+
+
+def test_complete_footage_is_not_flagged(tmp_path, video):
+    result = build(tmp_path).search(reference_image=make_reference(str(tmp_path / "r.png"), RED),
+                                    video_path=video, frame_interval=10)
+    assert result["search"]["video_ended_early"] is False
+
+
+def test_best_crops_are_held_compressed():
+    from pipeline.search_pipeline import _jpeg_bytes
+
+    rng = np.random.default_rng(1)
+    crop = Image.fromarray(rng.integers(0, 40, (700, 500, 3), dtype=np.uint8))  # large CCTV-like crop
+    encoded = _jpeg_bytes(crop)
+    assert encoded[:2] == b"\xff\xd8"  # JPEG
+    assert len(encoded) < 700 * 500 * 3 / 4  # far smaller than the raw pixels

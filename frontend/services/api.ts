@@ -99,6 +99,8 @@ export interface DetectorStatus {
   device?: string;
   fallback: boolean;
   fallback_reason?: string | null;
+  /** Set when the configured GPU was unusable and the CPU was used instead. */
+  device_fallback_reason?: string | null;
 }
 
 export interface VisionTraceMatch {
@@ -149,6 +151,8 @@ export interface VisionTraceResult {
     /** Detector input size used (larger = "small objects" search). */
     detection_size?: number | null;
     processing_seconds?: number;
+    /** Decoding stopped early: results cover only the readable footage. */
+    video_ended_early?: boolean;
     frames_analyzed: number;
     candidate_observations: number;
     unique_tracks: number;
@@ -715,6 +719,16 @@ export async function deleteSearch(searchId: string): Promise<void> {
 /**
  * AUTHENTICATION
  */
+
+/** Public: whether self-registration is open on this server. */
+export async function getAuthConfig(): Promise<{ registration_enabled: boolean }> {
+  const response = await apiFetch(`${API_BASE_URL}/api/auth/config`, {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  return readResponse(response, "Unable to load sign-in settings.");
+}
 
 export async function registerUser(
   data: RegisterInput

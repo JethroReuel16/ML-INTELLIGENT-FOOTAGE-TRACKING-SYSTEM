@@ -27,5 +27,5 @@ exec uvicorn main:app \
   --port "${PORT:-8000}" \
   --workers 1 \
   --proxy-headers \
-  --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-*}" \
+  --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-127.0.0.1}" \
   --timeout-keep-alive 75

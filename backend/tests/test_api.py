@@ -1,3 +1,4 @@
+import pytest
 import os
 import threading
 import time
@@ -375,3 +376,74 @@ def test_high_detail_flag_reaches_the_pipeline(client, monkeypatch):
     )
     assert r.status_code == 200, r.text
     assert seen["high_detail"] is True
+
+
+# ---------------------------------------------------------------- ML engine integration
+
+
+def test_unreadable_video_gives_a_clear_400(client, monkeypatch):
+    from app.services import search_service as module
+    from video.processor import VideoReadError
+
+    def broken(*args, **kwargs):
+        raise VideoReadError("The video could not be opened. It may be corrupt, incomplete or in an unsupported format.")
+
+    monkeypatch.setattr(module.search_service, "run_search", broken)
+    register_and_login(client)
+    r = upload_search(client)
+    assert r.status_code == 400
+    assert "could not be opened" in r.json()["detail"]
+
+
+def test_models_load_once_under_concurrent_first_searches(monkeypatch):
+    import threading
+    import time
+
+    from app.services import search_service as module
+
+    built = []
+
+    class SlowPipeline:
+        def __init__(self, **kwargs):
+            time.sleep(0.3)
+            built.append(1)
+            self.detector_status = {"active": "yoloe", "device": "cpu", "fallback": False}
+
+    monkeypatch.setattr(module, "VisionTracePipeline", SlowPipeline)
+    service = module.SearchService()
+    assert service.status() == {"state": "not_loaded"}
+
+    threads = [threading.Thread(target=service._get_pipeline) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(built) == 1
+    assert service.status() == {"state": "ready", "detector": "yoloe", "device": "cpu", "fallback": False}
+
+
+def test_model_load_failure_is_reported_and_retried(monkeypatch):
+    from app.services import search_service as module
+
+    attempts = []
+
+    class Broken:
+        def __init__(self, **kwargs):
+            attempts.append(1)
+            raise RuntimeError("weights missing")
+
+    monkeypatch.setattr(module, "VisionTracePipeline", Broken)
+    service = module.SearchService()
+    for _ in range(2):
+        with pytest.raises(RuntimeError):
+            service._get_pipeline()
+    assert len(attempts) == 2  # not cached as a permanent failure
+    assert service.status()["state"] == "error"
+    assert "weights missing" in service.status()["error"]
+
+
+def test_readiness_reports_ml_state(client):
+    body = client.get("/health/ready").json()
+    assert body["status"] == "ready"
+    assert "state" in body["ml"]
